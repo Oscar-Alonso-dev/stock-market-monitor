@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./app
+    ports:
+      - "8000:8000"
+    environment:
+      - FINNHUB_API_KEY=d6co4epr01qsiik2umv0d6co4epr01qsiik2umvg
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
