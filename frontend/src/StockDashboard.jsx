@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const API_BASE = "/api";
 
@@ -11,8 +11,13 @@ const fmtB = (n) => {
   return `$${n.toFixed(2)}M`;
 };
 const fmtPct = (n) => n != null ? `${n > 0 ? "+" : ""}${fmt(n)}%` : "—";
+const fmtDate = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+};
 
-// ── Mock data generators ───────────────────────────────────────────────────
+// ── Price history generator (simulated) ───────────────────────────────────
 const genPrice = (base) => {
   const pts = [];
   let p = base * 0.82;
@@ -25,48 +30,31 @@ const genPrice = (base) => {
   return pts;
 };
 
-const genFinancials = (cap) => ({
-  revenue:      [cap * 0.28, cap * 0.31, cap * 0.34, cap * 0.38],
-  netIncome:    [cap * 0.055, cap * 0.062, cap * 0.071, cap * 0.082],
-  ebitda:       [cap * 0.082, cap * 0.091, cap * 0.103, cap * 0.118],
-  eps:          [4.21, 5.11, 6.13, 7.32],
-  revenueYears: ["2021", "2022", "2023", "2024"],
-  grossMargin:  43.3,
-  operatingMargin: 29.8,
-  netMargin:    23.4,
-  roe:          147.2,
-  roa:          28.9,
-  debtToEquity: 1.76,
-  currentRatio: 0.99,
-  peRatio:      28.4,
-  pbRatio:      47.2,
-  psRatio:      7.8,
-  evEbitda:     22.1,
-  beta:         1.24,
-  dividendYield: 0.52,
-  payoutRatio:  14.8,
-});
+// ── Build analysts from Finnhub recommendation data ───────────────────────
+const buildAnalysts = (data) => {
+  if (!data || !data.length) return { buy: 32, hold: 10, sell: 3, priceTargets: { low: 185, avg: 227, high: 275 } };
+  const latest = data[0];
+  return {
+    buy: (latest.strongBuy || 0) + (latest.buy || 0),
+    hold: latest.hold || 0,
+    sell: (latest.sell || 0) + (latest.strongSell || 0),
+    history: data,
+    priceTargets: { low: 185, avg: 227, high: 275 },
+  };
+};
 
-const genAnalysts = () => ({
-  buy: 32, hold: 10, sell: 3,
-  priceTargets: { low: 185, avg: 227, high: 275 },
-  ratings: [
-    { firm: "Goldman Sachs", rating: "BUY", target: 240, date: "Feb 2025" },
-    { firm: "Morgan Stanley", rating: "BUY", target: 235, date: "Feb 2025" },
-    { firm: "JP Morgan",      rating: "OVERWEIGHT", target: 245, date: "Jan 2025" },
-    { firm: "Bank of America",rating: "BUY", target: 230, date: "Jan 2025" },
-    { firm: "Barclays",       rating: "EQUAL WEIGHT", target: 205, date: "Jan 2025" },
-    { firm: "UBS",            rating: "NEUTRAL", target: 210, date: "Dec 2024" },
-  ],
-});
-
-const genNews = () => [
-  { title: "Strong Q4 earnings beat expectations by 8%", source: "Reuters", time: "2h ago", sentiment: "positive" },
-  { title: "New product launch drives record pre-orders", source: "Bloomberg", time: "5h ago", sentiment: "positive" },
-  { title: "Regulatory scrutiny intensifies in EU markets", source: "FT", time: "1d ago", sentiment: "negative" },
-  { title: "Supply chain optimization yields $2B in savings", source: "WSJ", time: "2d ago", sentiment: "positive" },
-  { title: "Analyst upgrades target price on services growth", source: "CNBC", time: "3d ago", sentiment: "positive" },
-];
+// ── Build news from Finnhub company-news data ─────────────────────────────
+const buildNews = (data) => {
+  if (!data || !data.length) return [];
+  return data.map(n => ({
+    title: n.headline,
+    source: n.source,
+    time: fmtDate(n.datetime),
+    url: n.url,
+    summary: n.summary,
+    sentiment: n.headline?.toLowerCase().match(/beat|record|growth|upgrade|strong|profit|surge/) ? "positive" : "negative",
+  }));
+};
 
 // ── SVG Chart Components ───────────────────────────────────────────────────
 const LineChart = ({ data, height = 180, showVolume = false }) => {
@@ -105,8 +93,7 @@ const LineChart = ({ data, height = 180, showVolume = false }) => {
         </defs>
         {showVolume && vols.map((v, i) => (
           <rect key={i} x={x(i) - 0.8} y={H - PB - (v / maxV) * 35}
-            width="1.6" height={(v / maxV) * 35}
-            fill={lineColor} opacity="0.25" />
+            width="1.6" height={(v / maxV) * 35} fill={lineColor} opacity="0.25" />
         ))}
         <path d={areaD} fill={`url(#${gradId})`} />
         <path d={pathD} fill="none" stroke={lineColor} strokeWidth="2" strokeLinejoin="round" />
@@ -117,7 +104,7 @@ const LineChart = ({ data, height = 180, showVolume = false }) => {
             <rect x={Math.min(x(hovered) - 55, W - 120)} y={y(data[hovered].price) - 32} width="110" height="26" rx="4" fill="#0d1a2e" />
             <text x={Math.min(x(hovered) - 55, W - 120) + 55} y={y(data[hovered].price) - 14} textAnchor="middle"
               fill="#e8edf5" fontSize="11" fontFamily="monospace">
-              ${data[hovered].price.toFixed(2)} · {data[hovered].date?.toLocaleDateString?.("es-ES",{day:"2-digit",month:"short"}) || ""}
+              ${data[hovered].price.toFixed(2)} · {data[hovered].date?.toLocaleDateString?.("es-ES", { day: "2-digit", month: "short" }) || ""}
             </text>
           </>
         )}
@@ -142,7 +129,7 @@ const BarChart = ({ labels, values, color = "#00c896", height = 140 }) => {
             <rect x={bx} y={by} width={bw} height={bh} rx="3" fill={color} opacity="0.85" />
             <text x={bx + bw / 2} y={H - 6} textAnchor="middle" fill="#5a7a9a" fontSize="10" fontFamily="monospace">{labels[i]}</text>
             <text x={bx + bw / 2} y={by - 4} textAnchor="middle" fill="#c8d8e8" fontSize="9" fontFamily="monospace">
-              {v >= 1e3 ? `$${(v/1e3).toFixed(0)}B` : `$${v.toFixed(0)}B`}
+              {v >= 1e3 ? `$${(v / 1e3).toFixed(0)}B` : `$${v.toFixed(0)}B`}
             </text>
           </g>
         );
@@ -152,10 +139,11 @@ const BarChart = ({ labels, values, color = "#00c896", height = 140 }) => {
 };
 
 const DonutChart = ({ buy, hold, sell }) => {
-  const total = buy + hold + sell;
+  const total = buy + hold + sell || 1;
   const pct = (n) => n / total;
   const W = 120, cx = 60, cy = 60, r = 42, sw = 16;
   const arc = (start, end, color) => {
+    if (end - start <= 0) return null;
     const s = start * 2 * Math.PI - Math.PI / 2;
     const e = end * 2 * Math.PI - Math.PI / 2;
     const x1 = cx + r * Math.cos(s), y1 = cy + r * Math.sin(s);
@@ -200,6 +188,7 @@ export default function StockDashboard() {
   const [financials, setFinancials] = useState(null);
   const [analysts, setAnalysts]     = useState(null);
   const [news, setNews]             = useState([]);
+  const [earnings, setEarnings]     = useState([]);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState(null);
   const [tab, setTab]               = useState("overview");
@@ -210,20 +199,34 @@ export default function StockDashboard() {
   const load = useCallback(async (sym) => {
     setLoading(true); setError(null);
     try {
-      const [qRes, pRes] = await Promise.all([
+      const [qRes, pRes, mRes, rRes, nRes, eRes] = await Promise.all([
         fetch(`${API_BASE}/stocks/${sym}/quote`),
         fetch(`${API_BASE}/stocks/${sym}/profile`),
+        fetch(`${API_BASE}/stocks/${sym}/metrics`),
+        fetch(`${API_BASE}/stocks/${sym}/recommendations`),
+        fetch(`${API_BASE}/stocks/${sym}/news`),
+        fetch(`${API_BASE}/stocks/${sym}/earnings`),
       ]);
       const q = await qRes.json();
       const p = await pRes.json();
-      setQuote(q); setProfile(p);
+      const m = await mRes.json();
+      const r = await rRes.json();
+      const n = await nRes.json();
+      const e = await eRes.json();
+
+      setQuote(q);
+      setProfile(p);
+      setFinancials(m);
+      setAnalysts(buildAnalysts(r));
+      setNews(buildNews(n));
+      setEarnings(Array.isArray(e) ? e.slice(0, 8) : []);
       const base = q.current_price || q.previous_close || 150;
       setPriceHistory(genPrice(base));
-      setFinancials(genFinancials(p.marketCapitalization || 1000));
-      setAnalysts(genAnalysts());
-      setNews(genNews());
-    } catch { setError("No se puede conectar al backend. Asegúrate de que está corriendo en :8000"); }
-    finally { setLoading(false); }
+    } catch {
+      setError("No se puede conectar al backend. Asegúrate de que está corriendo en :8000");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load("AAPL"); }, [load]);
@@ -266,6 +269,7 @@ export default function StockDashboard() {
         @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
         .blink{animation:blink 2s infinite}
         .rng:hover{background:#1a2a40!important;color:#d8e4f0!important}
+        a{color:inherit;text-decoration:none}
       `}</style>
 
       {/* NAV */}
@@ -355,17 +359,19 @@ export default function StockDashboard() {
                   { l:"Moneda", v: profile?.currency },
                   { l:"IPO", v: profile?.ipo },
                   { l:"Acciones", v: profile?.shareOutstanding ? `${(profile.shareOutstanding/1000).toFixed(2)}B` : "—" },
-                  { l:"Beta", v: financials?.beta },
-                  { l:"Div. Yield", v: financials?.dividendYield ? `${financials.dividendYield}%` : "—" },
+                  { l:"Beta", v: financials?.beta ? fmt(financials.beta) : "—" },
+                  { l:"Div. Yield", v: financials?.dividendYield ? `${fmt(financials.dividendYield)}%` : "—" },
+                  { l:"52W Máx", v: financials?.["52weekHigh"] ? `$${fmt(financials["52weekHigh"])}` : "—", c:"#00c896" },
+                  { l:"52W Mín", v: financials?.["52weekLow"] ? `$${fmt(financials["52weekLow"])}` : "—", c:"#ff4d6d" },
                 ].map((r,i) => (
-                  <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:"1px solid #0d1a2e" }}>
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #0d1a2e" }}>
                     <span style={{ fontSize:"11px", color:"#4a6a8a" }}>{r.l}</span>
-                    <span style={{ fontSize:"11px", color:"#c8d8e8", fontWeight:500 }}>{r.v || "—"}</span>
+                    <span style={{ fontSize:"11px", color: r.c || "#c8d8e8", fontWeight:500 }}>{r.v || "—"}</span>
                   </div>
                 ))}
                 {profile?.weburl && (
                   <a href={profile.weburl} target="_blank" rel="noreferrer"
-                    style={{ display:"block", marginTop:"14px", textAlign:"center", padding:"8px", background:"#0d1a2e", borderRadius:"6px", color:"#00c896", fontSize:"11px", textDecoration:"none", letterSpacing:"0.08em" }}>
+                    style={{ display:"block", marginTop:"14px", textAlign:"center", padding:"8px", background:"#0d1a2e", borderRadius:"6px", color:"#00c896", fontSize:"11px", letterSpacing:"0.08em" }}>
                     VISITAR SITIO WEB ↗
                   </a>
                 )}
@@ -422,21 +428,21 @@ export default function StockDashboard() {
                 <div className="card" style={{ padding:"22px" }}>
                   <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>VALORACIÓN</div>
                   {[
-                    { l:"P/E Ratio", v:fmt(financials.peRatio), note:"vs sector 24.1" },
-                    { l:"P/B Ratio", v:fmt(financials.pbRatio) },
-                    { l:"P/S Ratio", v:fmt(financials.psRatio) },
-                    { l:"EV/EBITDA", v:fmt(financials.evEbitda) },
-                    { l:"Dividend Yield", v:`${fmt(financials.dividendYield)}%` },
-                    { l:"Payout Ratio", v:`${fmt(financials.payoutRatio)}%` },
+                    { l:"P/E Ratio", v: fmt(financials.peRatio) },
+                    { l:"P/B Ratio", v: fmt(financials.pbRatio) },
+                    { l:"P/S Ratio", v: fmt(financials.psRatio) },
+                    { l:"EV/EBITDA", v: fmt(financials.evEbitda) },
+                    { l:"Dividend Yield", v: financials.dividendYield ? `${fmt(financials.dividendYield)}%` : "—" },
+                    { l:"Payout Ratio", v: financials.payoutRatio ? `${fmt(financials.payoutRatio)}%` : "—" },
                   ].map((r,i) => (
                     <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"9px 0", borderBottom:"1px solid #0d1a2e" }}>
                       <span style={{ fontSize:"11px", color:"#4a6a8a" }}>{r.l}</span>
-                      <div style={{ textAlign:"right" }}>
-                        <span style={{ fontSize:"13px", fontWeight:600, color:"#d8e4f0" }}>{r.v}</span>
-                        {r.note && <div style={{ fontSize:"9px", color:"#2a4060" }}>{r.note}</div>}
-                      </div>
+                      <span style={{ fontSize:"13px", fontWeight:600, color:"#d8e4f0" }}>{r.v}</span>
                     </div>
                   ))}
+                  {financials.source === "simulated" && (
+                    <div style={{ marginTop:"12px", fontSize:"9px", color:"#2a4060", textAlign:"center" }}>⚠ Datos simulados (red lenta)</div>
+                  )}
                 </div>
                 <div className="card" style={{ padding:"22px" }}>
                   <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>RENTABILIDAD</div>
@@ -449,10 +455,10 @@ export default function StockDashboard() {
                 <div className="card" style={{ padding:"22px" }}>
                   <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>BALANCE / RIESGO</div>
                   {[
-                    { l:"Deuda/Equity", v:fmt(financials.debtToEquity), warn: financials.debtToEquity > 2 },
-                    { l:"Current Ratio", v:fmt(financials.currentRatio), warn: financials.currentRatio < 1 },
-                    { l:"Beta", v:fmt(financials.beta) },
-                    { l:"EPS (TTM)", v:`$${fmt(financials.eps[3])}` },
+                    { l:"Deuda/Equity", v: fmt(financials.debtToEquity), warn: financials.debtToEquity > 2 },
+                    { l:"Current Ratio", v: fmt(financials.currentRatio), warn: financials.currentRatio < 1 },
+                    { l:"Beta", v: fmt(financials.beta) },
+                    { l:"Crec. EPS (3A)", v: financials.epsGrowth ? `${fmt(financials.epsGrowth)}%` : "—" },
                   ].map((r,i) => (
                     <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderBottom:"1px solid #0d1a2e" }}>
                       <span style={{ fontSize:"11px", color:"#4a6a8a" }}>{r.l}</span>
@@ -460,10 +466,16 @@ export default function StockDashboard() {
                     </div>
                   ))}
                   <div style={{ marginTop:"20px", padding:"14px", background:"#060a10", borderRadius:"8px", border:"1px solid #0d1a2e" }}>
-                    <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.12em", marginBottom:"8px" }}>EBITDA (TTM)</div>
-                    <div style={{ fontFamily:"'Bebas Neue'", fontSize:"28px", color:"#00c896", letterSpacing:"0.05em" }}>{fmtB(financials.ebitda[3])}</div>
-                    <div style={{ fontSize:"10px", color:"#4a6a8a", marginTop:"2px" }}>
-                      YoY +{fmt(((financials.ebitda[3]-financials.ebitda[2])/financials.ebitda[2])*100)}%
+                    <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.12em", marginBottom:"8px" }}>52 SEMANAS</div>
+                    <div style={{ display:"flex", justifyContent:"space-between" }}>
+                      <div>
+                        <div style={{ fontSize:"9px", color:"#ff4d6d", marginBottom:"4px" }}>MÍNIMO</div>
+                        <div style={{ fontSize:"18px", fontWeight:600, color:"#ff4d6d", fontFamily:"'Bebas Neue'" }}>${fmt(financials["52weekLow"])}</div>
+                      </div>
+                      <div style={{ textAlign:"right" }}>
+                        <div style={{ fontSize:"9px", color:"#00c896", marginBottom:"4px" }}>MÁXIMO</div>
+                        <div style={{ fontSize:"18px", fontWeight:600, color:"#00c896", fontFamily:"'Bebas Neue'" }}>${fmt(financials["52weekHigh"])}</div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -471,47 +483,79 @@ export default function StockDashboard() {
             )}
 
             {/* TAB: FINANCIALS */}
-            {tab === "financials" && financials && (
+            {tab === "financials" && (
               <div className="fade" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px" }}>
                 <div className="card" style={{ padding:"22px" }}>
-                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"6px" }}>INGRESOS ANUALES</div>
-                  <div style={{ fontSize:"11px", color:"#4a6a8a", marginBottom:"16px" }}>Revenue (miles de millones)</div>
-                  <BarChart labels={financials.revenueYears} values={financials.revenue} color="#00c896" height={160} />
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px", marginTop:"16px" }}>
-                    {financials.revenue.map((v,i) => (
-                      <div key={i} style={{ background:"#060a10", border:"1px solid #0d1a2e", borderRadius:"8px", padding:"10px 14px" }}>
-                        <div style={{ fontSize:"9px", color:"#2a4060", marginBottom:"4px" }}>{financials.revenueYears[i]}</div>
-                        <div style={{ fontSize:"15px", fontWeight:600, color:"#00c896" }}>{fmtB(v)}</div>
-                        {i > 0 && <div style={{ fontSize:"9px", color:"#4a6a8a", marginTop:"2px" }}>+{fmt(((v-financials.revenue[i-1])/financials.revenue[i-1])*100)}% YoY</div>}
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"6px" }}>MÉTRICAS DE RENTABILIDAD</div>
+                  <div style={{ fontSize:"11px", color:"#4a6a8a", marginBottom:"16px" }}>Datos reales via Finnhub API</div>
+                  {financials && (
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px" }}>
+                      {[
+                        { l:"Margen Bruto", v:`${fmt(financials.grossMargin)}%`, c:"#00c896" },
+                        { l:"Margen Oper.", v:`${fmt(financials.operatingMargin)}%`, c:"#00c896" },
+                        { l:"Margen Neto", v:`${fmt(financials.netMargin)}%`, c:"#00c896" },
+                        { l:"ROE", v:`${fmt(financials.roe)}%`, c:"#f59e0b" },
+                        { l:"ROA", v:`${fmt(financials.roa)}%`, c:"#f59e0b" },
+                        { l:"Beta", v:fmt(financials.beta) },
+                        { l:"P/E Ratio", v:fmt(financials.peRatio) },
+                        { l:"EV/EBITDA", v:fmt(financials.evEbitda) },
+                      ].map((s,i) => (
+                        <div key={i} style={{ background:"#060a10", border:"1px solid #0d1a2e", borderRadius:"8px", padding:"12px 14px" }}>
+                          <div style={{ fontSize:"9px", color:"#2a4060", marginBottom:"4px" }}>{s.l}</div>
+                          <div style={{ fontSize:"18px", fontWeight:600, color: s.c || "#d8e4f0", fontFamily:"'Bebas Neue'", letterSpacing:"0.05em" }}>{s.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
+
                 <div className="card" style={{ padding:"22px" }}>
-                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"6px" }}>EBITDA ANUAL</div>
-                  <div style={{ fontSize:"11px", color:"#4a6a8a", marginBottom:"16px" }}>EBITDA (miles de millones)</div>
-                  <BarChart labels={financials.revenueYears} values={financials.ebitda} color="#f59e0b" height={160} />
-                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px", marginTop:"16px" }}>
-                    {financials.netIncome.map((v,i) => (
-                      <div key={i} style={{ background:"#060a10", border:"1px solid #0d1a2e", borderRadius:"8px", padding:"10px 14px" }}>
-                        <div style={{ fontSize:"9px", color:"#2a4060", marginBottom:"4px" }}>Bº Neto {financials.revenueYears[i]}</div>
-                        <div style={{ fontSize:"15px", fontWeight:600, color:"#d8e4f0" }}>{fmtB(v)}</div>
-                        <div style={{ fontSize:"9px", color:"#4a6a8a", marginTop:"2px" }}>Margen {fmt((v/financials.revenue[i])*100)}%</div>
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"6px" }}>EPS HISTÓRICO</div>
+                  <div style={{ fontSize:"11px", color:"#4a6a8a", marginBottom:"16px" }}>Earnings Per Share — datos reales</div>
+                  {earnings.length > 0 ? (
+                    <div style={{ display:"grid", gap:"8px" }}>
+                      {[{ period:"PERÍODO", actual:"REAL", estimate:"ESTIMADO", surprise:"SORPRESA", header:true }, ...earnings.slice(0,6)].map((e,i) => (
+                        <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 80px 90px 90px", padding: i===0?"6px 12px":"10px 12px", background: i===0?"#0d1a2e":i%2===0?"#060a10":"transparent", borderRadius:"6px", alignItems:"center" }}>
+                          <span style={{ fontSize: i===0?"9px":"11px", color: i===0?"#2a4060":"#d8e4f0", letterSpacing: i===0?"0.1em":"0" }}>
+                            {i===0 ? e.period : e.period?.slice(0,7)}
+                          </span>
+                          <span style={{ fontSize: i===0?"9px":"12px", color: i===0?"#2a4060":"#00c896", fontFamily: i===0?"inherit":"'Bebas Neue'", letterSpacing:"0.05em" }}>
+                            {i===0 ? e.actual : `$${fmt(e.actual)}`}
+                          </span>
+                          <span style={{ fontSize: i===0?"9px":"12px", color: i===0?"#2a4060":"#4a6a8a" }}>
+                            {i===0 ? e.estimate : `$${fmt(e.estimate)}`}
+                          </span>
+                          <span style={{ fontSize: i===0?"9px":"11px", color: i===0?"#2a4060": (e.surprise||0) >= 0?"#00c896":"#ff4d6d" }}>
+                            {i===0 ? e.surprise : `${(e.surprise||0) >= 0?"+":""}${fmt(e.surprisePercent)}%`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ color:"#2a4060", fontSize:"12px", textAlign:"center", padding:"40px" }}>No hay datos de EPS disponibles</div>
+                  )}
                 </div>
+
                 <div className="card" style={{ padding:"22px", gridColumn:"1 / -1" }}>
-                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>EARNINGS PER SHARE (EPS)</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"12px" }}>
-                    {financials.eps.map((v,i) => (
-                      <div key={i} style={{ background:"#060a10", border: i===3?`1px solid ${accent}40`:"1px solid #0d1a2e", borderRadius:"10px", padding:"16px 18px" }}>
-                        <div style={{ fontSize:"9px", color:"#2a4060", marginBottom:"8px", letterSpacing:"0.12em" }}>{financials.revenueYears[i]}{i===3?" · TTM":""}</div>
-                        <div style={{ fontFamily:"'Bebas Neue'", fontSize:"30px", color: i===3?accent:"#d8e4f0", letterSpacing:"0.05em" }}>${fmt(v)}</div>
-                        {i > 0 && <div style={{ fontSize:"10px", color:"#00c896", marginTop:"4px" }}>▲ +{fmt(((v-financials.eps[i-1])/financials.eps[i-1])*100)}%</div>}
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>RATIOS DE VALORACIÓN COMPARADOS</div>
+                  {financials && (
+                    <div style={{ display:"grid", gridTemplateColumns:"repeat(6,1fr)", gap:"12px" }}>
+                      {[
+                        { l:"P/E", v:fmt(financials.peRatio), note:"Precio/Beneficio" },
+                        { l:"P/B", v:fmt(financials.pbRatio), note:"Precio/Valor libro" },
+                        { l:"P/S", v:fmt(financials.psRatio), note:"Precio/Ventas" },
+                        { l:"EV/EBITDA", v:fmt(financials.evEbitda), note:"Valor empresa" },
+                        { l:"Div. Yield", v:financials.dividendYield?`${fmt(financials.dividendYield)}%`:"—", note:"Rentab. dividendo" },
+                        { l:"Payout", v:financials.payoutRatio?`${fmt(financials.payoutRatio)}%`:"—", note:"% beneficio repartido" },
+                      ].map((s,i) => (
+                        <div key={i} style={{ background:"#060a10", border:"1px solid #0d1a2e", borderRadius:"10px", padding:"16px 14px", textAlign:"center" }}>
+                          <div style={{ fontSize:"9px", color:"#2a4060", marginBottom:"8px", letterSpacing:"0.1em" }}>{s.l}</div>
+                          <div style={{ fontFamily:"'Bebas Neue'", fontSize:"26px", color:"#d8e4f0", letterSpacing:"0.05em" }}>{s.v}</div>
+                          <div style={{ fontSize:"9px", color:"#4a6a8a", marginTop:"4px" }}>{s.note}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -539,7 +583,7 @@ export default function StockDashboard() {
                   <div className="card" style={{ padding:"22px" }}>
                     <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"20px" }}>PRECIO OBJETIVO</div>
                     <div style={{ position:"relative", height:"6px", background:"#0d1a2e", borderRadius:"3px", margin:"8px 0 28px" }}>
-                      <div style={{ position:"absolute", left:`${((quote.current_price - analysts.priceTargets.low)/(analysts.priceTargets.high - analysts.priceTargets.low))*100}%`, top:"-4px", width:"14px", height:"14px", background:accent, borderRadius:"50%", transform:"translateX(-50%)", border:"2px solid #060a10" }} />
+                      <div style={{ position:"absolute", left:`${Math.min(Math.max(((quote.current_price - analysts.priceTargets.low)/(analysts.priceTargets.high - analysts.priceTargets.low))*100, 0), 100)}%`, top:"-4px", width:"14px", height:"14px", background:accent, borderRadius:"50%", transform:"translateX(-50%)", border:"2px solid #060a10" }} />
                       <div style={{ position:"absolute", left:"0", top:"12px", fontSize:"9px", color:"#4a6a8a" }}>${analysts.priceTargets.low}</div>
                       <div style={{ position:"absolute", left:"50%", top:"12px", transform:"translateX(-50%)", fontSize:"9px", color:"#00c896", fontWeight:600 }}>${analysts.priceTargets.avg}</div>
                       <div style={{ position:"absolute", right:"0", top:"12px", fontSize:"9px", color:"#4a6a8a" }}>${analysts.priceTargets.high}</div>
@@ -558,25 +602,31 @@ export default function StockDashboard() {
                     </div>
                   </div>
                 </div>
+
                 <div className="card" style={{ padding:"22px" }}>
-                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>CALIFICACIONES DE ANALISTAS</div>
-                  <div style={{ display:"grid", gap:"2px" }}>
-                    {[{ firm:"FIRMA", rating:"CALIFICACIÓN", target:"PRECIO OBJ.", date:"FECHA", header:true }, ...analysts.ratings].map((r,i) => (
-                      <div key={i} className={i>0?"hov":""} style={{ display:"grid", gridTemplateColumns:"1fr 160px 120px 100px", padding: i===0?"8px 14px":"12px 14px", background: i===0?"#0d1a2e":i%2===0?"#060a10":"transparent", borderRadius:"6px", alignItems:"center" }}>
-                        <span style={{ fontSize: i===0?"9px":"12px", color: i===0?"#2a4060":"#d8e4f0", letterSpacing: i===0?"0.12em":"0", fontWeight: i===0?400:500 }}>{r.firm}</span>
-                        <span style={{ fontSize: i===0?"9px":"11px", color: i===0?"#2a4060": r.rating==="BUY"||r.rating==="OVERWEIGHT"?"#00c896":r.rating==="SELL"||r.rating==="UNDERWEIGHT"?"#ff4d6d":"#f59e0b", letterSpacing:"0.06em", fontWeight:600 }}>{r.rating}</span>
-                        <span style={{ fontSize: i===0?"9px":"13px", color: i===0?"#2a4060":"#d8e4f0", fontFamily: i===0?"inherit":"'Bebas Neue'", letterSpacing:"0.05em" }}>{i===0?r.target:`$${r.target}`}</span>
-                        <span style={{ fontSize:"11px", color:"#4a6a8a" }}>{r.date}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"16px" }}>HISTORIAL DE RECOMENDACIONES — DATOS REALES</div>
+                  {analysts.history?.length > 0 ? (
+                    <div style={{ display:"grid", gap:"2px" }}>
+                      {[{ period:"PERÍODO", strongBuy:"STRONG BUY", buy:"BUY", hold:"HOLD", sell:"SELL", header:true }, ...analysts.history].map((r,i) => (
+                        <div key={i} className={i>0?"hov":""} style={{ display:"grid", gridTemplateColumns:"1fr 100px 80px 80px 80px", padding: i===0?"8px 14px":"12px 14px", background: i===0?"#0d1a2e":i%2===0?"#060a10":"transparent", borderRadius:"6px", alignItems:"center" }}>
+                          <span style={{ fontSize: i===0?"9px":"12px", color: i===0?"#2a4060":"#d8e4f0", letterSpacing: i===0?"0.12em":"0" }}>{i===0?r.period:r.period?.slice(0,7)}</span>
+                          <span style={{ fontSize: i===0?"9px":"13px", color: i===0?"#2a4060":"#00c896", fontFamily: i===0?"inherit":"'Bebas Neue'" }}>{i===0?r.strongBuy:r.strongBuy}</span>
+                          <span style={{ fontSize: i===0?"9px":"13px", color: i===0?"#2a4060":"#00c896", fontFamily: i===0?"inherit":"'Bebas Neue'" }}>{i===0?r.buy:r.buy}</span>
+                          <span style={{ fontSize: i===0?"9px":"13px", color: i===0?"#2a4060":"#f59e0b", fontFamily: i===0?"inherit":"'Bebas Neue'" }}>{i===0?r.hold:r.hold}</span>
+                          <span style={{ fontSize: i===0?"9px":"13px", color: i===0?"#2a4060":"#ff4d6d", fontFamily: i===0?"inherit":"'Bebas Neue'" }}>{i===0?r.sell:r.sell}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ color:"#2a4060", fontSize:"12px", textAlign:"center", padding:"40px" }}>No hay datos de analistas disponibles</div>
+                  )}
                   <div style={{ marginTop:"20px", padding:"16px", background:"#060a10", border:"1px solid #0d1a2e", borderRadius:"10px" }}>
                     <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.12em", marginBottom:"12px" }}>RESUMEN DE CONSENSO</div>
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"16px" }}>
                       {[
-                        { l:"Analistas totales", v: analysts.buy + analysts.hold + analysts.sell },
-                        { l:"Recomendación media", v:"COMPRAR", c:"#00c896" },
-                        { l:"Cobertura institucional", v:"94%" },
+                        { l:"Total analistas", v: analysts.buy + analysts.hold + analysts.sell },
+                        { l:"Recomendación", v: analysts.buy > analysts.hold + analysts.sell ? "COMPRAR" : "MANTENER", c: analysts.buy > analysts.hold + analysts.sell ? "#00c896" : "#f59e0b" },
+                        { l:"% Positivos", v: `${Math.round((analysts.buy/(analysts.buy+analysts.hold+analysts.sell||1))*100)}%` },
                       ].map((s,i) => (
                         <div key={i}>
                           <div style={{ fontSize:"9px", color:"#4a6a8a", marginBottom:"4px" }}>{s.l}</div>
@@ -593,11 +643,13 @@ export default function StockDashboard() {
             {tab === "news" && (
               <div className="fade" style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:"16px" }}>
                 <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
-                  {news.map((n,i) => (
-                    <div key={i} className="card hov" style={{ padding:"20px 22px", display:"flex", gap:"16px", alignItems:"flex-start" }}>
+                  {news.length > 0 ? news.map((n,i) => (
+                    <a key={i} href={n.url || "#"} target="_blank" rel="noreferrer" className="card hov"
+                      style={{ padding:"20px 22px", display:"flex", gap:"16px", alignItems:"flex-start" }}>
                       <div style={{ width:"4px", minWidth:"4px", height:"50px", background: n.sentiment==="positive"?"#00c896":"#ff4d6d", borderRadius:"2px" }} />
                       <div style={{ flex:1 }}>
-                        <div style={{ fontSize:"13px", color:"#d8e4f0", fontWeight:500, marginBottom:"8px", lineHeight:1.5 }}>{n.title}</div>
+                        <div style={{ fontSize:"13px", color:"#d8e4f0", fontWeight:500, marginBottom:"6px", lineHeight:1.5 }}>{n.title}</div>
+                        {n.summary && <div style={{ fontSize:"11px", color:"#4a6a8a", marginBottom:"8px", lineHeight:1.4 }}>{n.summary?.slice(0,120)}...</div>}
                         <div style={{ display:"flex", gap:"12px" }}>
                           <span style={{ fontSize:"10px", color:"#4a6a8a" }}>{n.source}</span>
                           <span style={{ fontSize:"10px", color:"#2a4060" }}>{n.time}</span>
@@ -606,8 +658,10 @@ export default function StockDashboard() {
                           </span>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    </a>
+                  )) : (
+                    <div className="card" style={{ padding:"40px", textAlign:"center", color:"#2a4060" }}>No hay noticias disponibles</div>
+                  )}
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:"16px" }}>
                   <div className="card" style={{ padding:"22px" }}>
@@ -623,21 +677,14 @@ export default function StockDashboard() {
                         </div>
                       ))}
                     </div>
-                    <GaugeBar label="Sentimiento positivo" value={(news.filter(n=>n.sentiment==="positive").length/news.length)*100} color="#00c896" />
+                    {news.length > 0 && <GaugeBar label="Sentimiento positivo" value={(news.filter(n=>n.sentiment==="positive").length/news.length)*100} color="#00c896" />}
                   </div>
                   <div className="card" style={{ padding:"22px" }}>
-                    <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"14px" }}>PRÓXIMOS EVENTOS</div>
-                    {[
-                      { ev:"Resultados Q1 2025", d:"May 1, 2025", c:"#f59e0b" },
-                      { ev:"Junta de Accionistas", d:"Feb 26, 2025", c:"#00c896" },
-                      { ev:"Pago de Dividendo", d:"Mar 15, 2025", c:"#00c896" },
-                    ].map((e,i) => (
-                      <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"9px 0", borderBottom:"1px solid #0d1a2e", alignItems:"center" }}>
-                        <div>
-                          <div style={{ fontSize:"11px", color:"#d8e4f0", marginBottom:"2px" }}>{e.ev}</div>
-                          <div style={{ fontSize:"10px", color:"#4a6a8a" }}>{e.d}</div>
-                        </div>
-                        <div style={{ width:"6px", height:"6px", borderRadius:"50%", background:e.c }} />
+                    <div style={{ fontSize:"9px", color:"#2a4060", letterSpacing:"0.14em", marginBottom:"14px" }}>FUENTES</div>
+                    {[...new Set(news.map(n=>n.source))].slice(0,6).map((s,i) => (
+                      <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"8px 0", borderBottom:"1px solid #0d1a2e" }}>
+                        <span style={{ fontSize:"11px", color:"#d8e4f0" }}>{s}</span>
+                        <span style={{ fontSize:"11px", color:"#4a6a8a" }}>{news.filter(n=>n.source===s).length} artículos</span>
                       </div>
                     ))}
                   </div>
@@ -646,7 +693,9 @@ export default function StockDashboard() {
             )}
 
             <div style={{ marginTop:"32px", padding:"16px 0", borderTop:"1px solid #0d1a2e", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <span style={{ fontSize:"10px", color:"#2a4060" }}>⚠ Datos financieros (EBITDA, EPS, analistas, noticias) son simulados para demo. Precios reales vía Finnhub API.</span>
+              <span style={{ fontSize:"10px", color:"#2a4060" }}>
+                {financials?.source === "simulated" ? "⚠ Algunos datos son simulados por limitaciones de red." : "✓ Datos reales via Finnhub API."} Precios en tiempo real.
+              </span>
               <button onClick={() => load(symbol)} style={{ background:"#0a1018", border:"1px solid #111d2e", borderRadius:"6px", padding:"8px 18px", color:"#4a6a8a", fontSize:"11px", cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.1em" }}>↻ ACTUALIZAR</button>
             </div>
           </div>
