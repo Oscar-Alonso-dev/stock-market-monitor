@@ -1,0 +1,41 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write    
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Login en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ───── BACKEND ─────
+      - name: Build backend
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/aurum-backend:latest ./app
+
+      - name: Push backend
+        if: github.event_name != 'pull_request'
+        run: docker push ghcr.io/${{ github.repository_owner }}/aurum-backend:latest
+
+      # ───── FRONTEND ─────
+      - name: Build frontend
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest ./frontend
+
+      - name: Push frontend
+        if: github.event_name != 'pull_request'
+        run: docker push ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest
