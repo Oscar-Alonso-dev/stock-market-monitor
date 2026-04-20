@@ -19,8 +19,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: comprobar codigo
-        run:
-                  cd  app
+        run: |
+                  cd app
                   npm install
                   npm test  
 
