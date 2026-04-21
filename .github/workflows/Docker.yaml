@@ -46,6 +46,13 @@ jobs:
         if: github.event_name != 'pull_request'
         run: docker push ghcr.io/${{ github.repository_owner }}/aurum-backend:latest
 
+      - name: Comprobar seguridad Backend
+        run: |
+          cd app
+          pip install --upgrade pip
+          pip install fastapi uvicorn httpx
+          python -m py_compile main.py 
+
       # ───── FRONTEND ─────
       - name: Build frontend
         run: docker build -t ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest ./frontend
@@ -53,3 +60,9 @@ jobs:
       - name: Push frontend
         if: github.event_name != 'pull_request'
         run: docker push ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest
+
+      - name: Comprobar seguridad Frontend
+        run: | 
+          cd frontend    
+          npm ci
+          npm audit --audit-level=high
