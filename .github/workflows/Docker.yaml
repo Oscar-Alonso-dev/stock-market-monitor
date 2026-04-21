@@ -53,9 +53,18 @@ jobs:
           pip install fastapi uvicorn httpx
           python -m py_compile main.py 
 
+      - name: Montar contenedor Backend
+        run: |
+            docker run -d -p 8000:8000 --name backend ghcr.io/${{ github.repository_owner }}/aurum-backend:latest
+            sleep 5
+            curl --fail http://localhost:8000
+            docker stop backend || true
+            docker rm backend || true
+
       # ───── FRONTEND ─────
       - name: Build frontend
         run: docker build -t ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest ./frontend
+             
 
       - name: Push frontend
         if: github.event_name != 'pull_request'
@@ -66,3 +75,11 @@ jobs:
           cd frontend    
           npm ci
           npm audit --audit-level=high || true
+
+      - name: Montar contenedor Frontend
+        run: |
+            docker run -d -p 3000:3000 --name frontend ghcr.io/${{ github.repository_owner }}/aurum-frontend:latest
+            sleep 5
+            curl --fail http://localhost:3000
+            docker stop frontend || true
+            docker rm frontend || true 
