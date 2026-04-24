@@ -33,6 +33,48 @@ def _cache_set(key: str, data):
     _cnmv_cache[key] = {"data": data, "ts": time.time()}
 
 
+async def _fetch_catalog_cnmv(limit: int = 5000) -> list:
+    """Descarga un catálogo amplio de fondos desde CNMV y lo cachea."""
+    cached = _cache_get("cnmv_catalog:full", 86400)
+    if cached:
+        return cached
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, headers=CNMV_HEADERS) as c:
+            r = await c.get(
+                f"{CNMV_BASE}/iic/fondos",
+                params={"_num": limit, "_ini": 0},
+            )
+            if r.status_code != 200:
+                return []
+
+            data = r.json()
+            items = data.get("listResult", data if isinstance(data, list) else [])
+            catalog = []
+            for item in items:
+                isin = item.get("isin") or item.get("ISIN") or ""
+                nombre = item.get("nombre") or item.get("NOMBRE") or ""
+                gestora = item.get("gestora") or item.get("GESTORA") or ""
+                nreg = item.get("nregistro") or item.get("NREGISTRO") or ""
+                if not isin and not nombre:
+                    continue
+                catalog.append({
+                    "symbol": isin or nreg,
+                    "isin": isin,
+                    "name": nombre or isin or nreg,
+                    "mgr": gestora,
+                    "grp": "🏦 CNMV Catálogo",
+                    "source": "cnmv_catalog",
+                    "type": "MUTUALFUND",
+                    "nregistro": nreg,
+                })
+
+            _cache_set("cnmv_catalog:full", catalog)
+            return catalog
+    except:
+        return []
+
+
 # ── Catálogo de fondos españoles con ISIN ────────────────────────────────────
 # Mapeados manualmente — ISINs verificados en CNMV
 FONDOS_ESP = {
@@ -205,19 +247,35 @@ async def search_fondos_cnmv(query: str) -> list:
     if cached:
         return cached
 
+    ql = query.lower().strip()
+    local_results = []
+    for isin, meta in FONDOS_ESP.items():
+        haystack = " ".join([isin, meta.get("name", ""), meta.get("mgr", ""), meta.get("grp", "")]).lower()
+        if ql and ql in haystack:
+            local_results.append({
+                "symbol": isin,
+                "name": meta.get("name", isin),
+                "isin": isin,
+                "type": "MUTUALFUND",
+                "exchange": "CNMV",
+                "source": "cnmv_local",
+                "gestora": meta.get("mgr", ""),
+            })
+
     try:
         async with httpx.AsyncClient(timeout=10.0, headers=CNMV_HEADERS) as c:
             r = await c.get(f"{CNMV_BASE}/iic/fondos",
-                            params={"nombre": query, "_num": 20, "_ini": 0})
+                            params={"nombre": query, "_num": 50, "_ini": 0})
             if r.status_code != 200:
-                return []
+                return local_results
             data = r.json()
             items = data.get("listResult", data if isinstance(data, list) else [])
             results = []
             for item in items:
                 isin  = item.get("isin") or item.get("ISIN") or ""
                 nombre= item.get("nombre") or item.get("NOMBRE") or ""
-                nreg  = item.get("nregistro") or ""
+                nreg  = item.get("nregistro") or item.get("NREGISTRO") or ""
+                gestora = item.get("gestora") or item.get("GESTORA") or ""
                 if not isin and not nombre:
                     continue
                 results.append({
@@ -228,17 +286,54 @@ async def search_fondos_cnmv(query: str) -> list:
                     "exchange": "CNMV",
                     "source":   "cnmv",
                     "nregistro": nreg,
+                    "gestora": gestora,
                 })
-            _cache_set(f"cnmv_search:{query.lower()}", results)
-            return results
+
+            merged = []
+            seen = set()
+            for item in local_results + results:
+                key = item.get("isin") or item.get("symbol") or item.get("name")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+
+            _cache_set(f"cnmv_search:{query.lower()}", merged)
+            return merged
     except:
-        return []
+        return local_results
 
 
 # Lista de todos los ISINs que conocemos con su símbolo para el frontend
 def get_catalog_cnmv() -> list:
     """Devuelve el catálogo de fondos CNMV con metadata."""
-    return [
-        {"symbol": isin, "isin": isin, **meta}
-        for isin, meta in FONDOS_ESP.items()
-    ]
+    return []
+
+
+async def get_catalog_cnmv_full() -> list:
+    """Devuelve el catálogo remoto de CNMV enriquecido con metadatos locales."""
+    remote_catalog = await _fetch_catalog_cnmv()
+    merged = []
+    seen = set()
+
+    for item in remote_catalog:
+        isin = item.get("isin") or ""
+        local_meta = FONDOS_ESP.get(isin, {})
+        merged_item = {
+            **item,
+            "name": local_meta.get("name", item.get("name", "")),
+            "mgr": local_meta.get("mgr", item.get("mgr", "")),
+            "grp": local_meta.get("grp", item.get("grp", "🏦 CNMV Catálogo")),
+        }
+        key = merged_item.get("isin") or merged_item.get("symbol") or merged_item.get("name")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(merged_item)
+
+    for isin, meta in FONDOS_ESP.items():
+        if isin in seen:
+            continue
+        merged.append({"symbol": isin, "isin": isin, **meta, "source": "cnmv_local", "type": "MUTUALFUND"})
+
+    return merged

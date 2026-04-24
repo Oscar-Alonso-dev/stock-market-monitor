@@ -86,7 +86,7 @@ def load_tickers():
 
 # ── CNMV ─────────────────────────────────────────────────────────────────────
 try:
-    from cnmv import get_vl_historico, search_fondos_cnmv, get_catalog_cnmv, FONDOS_ESP
+    from cnmv import get_vl_historico, search_fondos_cnmv, get_catalog_cnmv, get_catalog_cnmv_full, FONDOS_ESP
     CNMV_OK = True
     print("✓ Módulo CNMV cargado")
 except ImportError:
@@ -517,10 +517,26 @@ async def funds_search(q: str = Query(..., min_length=1)):
     async def fetch():
         import httpx
         results = []
+        def push_result(item: dict):
+            symbol = (item.get("symbol") or "").strip()
+            name = (item.get("name") or "").strip()
+            if not symbol or not name:
+                return
+            key_symbol = symbol.upper()
+            key_isin = (item.get("isin") or "").strip().upper()
+            for existing in results:
+                existing_symbol = (existing.get("symbol") or "").strip().upper()
+                existing_isin = (existing.get("isin") or "").strip().upper()
+                if key_symbol == existing_symbol or (key_isin and key_isin == existing_isin):
+                    for field in ("mstar_id", "isin", "exchange", "source", "gestora", "type"):
+                        if item.get(field) and not existing.get(field):
+                            existing[field] = item[field]
+                    return
+            results.append(item)
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
             try:
                 r = await c.get("https://www.morningstar.es/es/util/SecuritySearch.ashx",
-                    params={"q":q,"limit":15,"investmentTyp":"","universeIds":"FOESP$$ALL|FOEUR$$ALL|ETFESP$$ALL"},
+                    params={"q":q,"limit":40,"investmentTyp":"","universeIds":"FOESP$$ALL|FOEUR$$ALL|ETFESP$$ALL|ETFEUR$$ALL"},
                     headers=MSTAR_HEADERS, timeout=10.0)
                 if r.status_code==200 and r.text:
                     for line in r.text.strip().split("\n"):
@@ -530,23 +546,31 @@ async def funds_search(q: str = Query(..., min_length=1)):
                         except: continue
                         pi=meta.get("pi","")
                         if not pi: continue
-                        results.append({"symbol":f"{pi}.F","mstar_id":meta.get("i",""),
+                        push_result({"symbol":f"{pi}.F","mstar_id":meta.get("i",""),
                             "name":parts[0].strip(),"type":"MUTUALFUND",
-                            "exchange":"Morningstar ES","isin":"","source":"morningstar"})
+                            "exchange":"Morningstar ES",
+                            "isin":meta.get("isin","") or meta.get("ISIN","") or "",
+                            "gestora":meta.get("company","") or meta.get("providerCompanyName","") or "",
+                            "source":"morningstar"})
             except: pass
             try:
                 r2=await c.get("https://query1.finance.yahoo.com/v1/finance/search",
-                    params={"q":q,"quotesCount":10,"newsCount":0}, headers=YAHOO_HEADERS, timeout=10.0)
+                    params={"q":q,"quotesCount":25,"newsCount":0}, headers=YAHOO_HEADERS, timeout=10.0)
                 if r2.status_code==200:
                     for item in r2.json().get("quotes",[]):
+                        quote_type = (item.get("quoteType","") or "").upper()
+                        if quote_type not in {"MUTUALFUND", "ETF"}:
+                            continue
                         sym=item.get("symbol","")
-                        if not sym or any(r["symbol"]==sym for r in results): continue
-                        results.append({"symbol":sym,"mstar_id":"",
+                        if not sym:
+                            continue
+                        push_result({"symbol":sym,"mstar_id":"",
                             "name":item.get("longname") or item.get("shortname") or sym,
-                            "type":item.get("quoteType",""),"exchange":item.get("exchDisp") or "",
-                            "isin":"","source":"yahoo"})
+                            "type":quote_type,"exchange":item.get("exchDisp") or "",
+                            "isin":item.get("isin","") or "",
+                            "source":"yahoo"})
             except: pass
-        return results
+        return results[:60]
     base_results = await cached(f"funds_search:{q.lower().strip()}", fetch, ttl=300)
 
     # Añadir resultados CNMV si disponible
@@ -554,22 +578,27 @@ async def funds_search(q: str = Query(..., min_length=1)):
         try:
             cnmv_results = await search_fondos_cnmv(q)
             # Deduplicar por símbolo/ISIN
-            existing = {r["symbol"] for r in base_results}
+            existing = {(r.get("symbol") or "").upper() for r in base_results}
+            existing_isins = {(r.get("isin") or "").upper() for r in base_results if r.get("isin")}
             for cr in cnmv_results:
-                if cr["symbol"] not in existing:
+                cr_symbol = (cr.get("symbol") or "").upper()
+                cr_isin = (cr.get("isin") or "").upper()
+                if cr_symbol not in existing and (not cr_isin or cr_isin not in existing_isins):
                     base_results.append(cr)
-                    existing.add(cr["symbol"])
+                    existing.add(cr_symbol)
+                    if cr_isin:
+                        existing_isins.add(cr_isin)
         except:
             pass
 
-    return base_results
+    return base_results[:80]
 
 @app.get("/funds/cnmv/catalog")
 async def cnmv_catalog():
     """Devuelve el catálogo completo de fondos españoles con sus ISINs."""
     if not CNMV_OK:
         return []
-    return get_catalog_cnmv()
+    return await get_catalog_cnmv_full()
 
 @app.get("/funds/cnmv/search")
 async def cnmv_search(q: str = Query(..., min_length=2)):
@@ -583,6 +612,88 @@ async def fund_detail(symbol: str):
     async def fetch():
         import httpx, datetime
 
+        async def yahoo_chart(sym: str):
+            async with httpx.AsyncClient(timeout=20.0) as c:
+                r = await c.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
+                    params={"interval": "1d", "range": "1y"},
+                    headers=YAHOO_HEADERS)
+                if r.status_code != 200:
+                    return None
+
+                data = r.json()
+                res  = data.get("chart", {}).get("result", [])
+                if not res:
+                    return None
+
+                meta   = res[0].get("meta", {})
+                ts     = res[0].get("timestamp", [])
+                quotes = res[0].get("indicators", {}).get("quote", [{}])[0]
+                closes = quotes.get("close", [])
+
+                hist = []
+                for i, t in enumerate(ts):
+                    p = closes[i] if i < len(closes) else None
+                    if p and p > 0:
+                        hist.append({"date": t, "nav": round(float(p), 4)})
+
+                if not hist:
+                    return None
+
+                current = meta.get("regularMarketPrice") or hist[-1]["nav"]
+                prev    = meta.get("chartPreviousClose") or (hist[-2]["nav"] if len(hist) > 1 else current)
+                chg_pct = round(((current - prev) / prev) * 100, 2) if prev else 0
+
+                def ret(days):
+                    if len(hist) >= days:
+                        old = hist[-days]["nav"]
+                        return round(((current - old) / old) * 100, 2) if old else None
+                    return None
+
+                y0      = int(datetime.datetime(datetime.datetime.now().year, 1, 1).timestamp())
+                ytd_pts = [h for h in hist if h["date"] >= y0]
+                ytd     = round(((current - ytd_pts[0]["nav"]) / ytd_pts[0]["nav"]) * 100, 2) if ytd_pts else None
+                name = meta.get("longName") or meta.get("shortName") or sym
+
+                return {
+                    "symbol":       sym,
+                    "name":         name,
+                    "type":         meta.get("instrumentType") or meta.get("quoteType") or "ETF",
+                    "currency":     meta.get("currency", "EUR"),
+                    "exchange":     meta.get("exchangeName", ""),
+                    "current_nav":  round(current, 4),
+                    "current_price":round(current, 4),
+                    "prev_nav":     round(prev, 4),
+                    "change_pct":   chg_pct,
+                    "52w_high":     meta.get("fiftyTwoWeekHigh"),
+                    "52w_low":      meta.get("fiftyTwoWeekLow"),
+                    "return_1d":    chg_pct,
+                    "return_1w":    ret(5),
+                    "return_1m":    ret(21),
+                    "return_3m":    ret(63),
+                    "return_6m":    ret(126),
+                    "return_ytd":   ytd,
+                    "return_1y":    ret(252),
+                    "return_3y":    ret(min(756, len(hist)-1)),
+                    "history":      hist,
+                    "data_points":  len(hist),
+                    "source":       "yahoo_finance",
+                }
+
+        async def resolve_yahoo_symbol(raw_symbol: str):
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                r = await c.get(
+                    "https://query1.finance.yahoo.com/v1/finance/search",
+                    params={"q": raw_symbol, "quotesCount": 10, "newsCount": 0},
+                    headers=YAHOO_HEADERS)
+                if r.status_code != 200:
+                    return None
+                for item in r.json().get("quotes", []):
+                    quote_type = (item.get("quoteType", "") or "").upper()
+                    if quote_type in {"MUTUALFUND", "ETF"} and item.get("symbol"):
+                        return item["symbol"]
+            return None
+
         # ── Ruta 1: ISIN español → CNMV (fuente oficial, datos garantizados) ──
         is_spanish_isin = symbol.startswith("ES") and len(symbol) == 12
         if is_spanish_isin and CNMV_OK:
@@ -592,83 +703,20 @@ async def fund_detail(symbol: str):
             # Si CNMV falla, intentar Yahoo como fallback
 
         # ── Ruta 2: Yahoo Finance (ETFs, acciones, fondos 0P...) ─────────────
-        async with httpx.AsyncClient(timeout=20.0) as c:
-            # Yahoo Finance v8/chart funciona con:
-            # - ETFs cotizados: IWDA.AS, CSPX.L, SPY, VOO...
-            # - Fondos Morningstar: 0P00019W2R.F
-            # - ISINs no españoles via ticker Yahoo
-            r = await c.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-                params={"interval": "1d", "range": "1y"},
-                headers=YAHOO_HEADERS)
+        yahoo_result = await yahoo_chart(symbol)
+        if yahoo_result:
+            return yahoo_result
 
-            if r.status_code != 200:
-                raise HTTPException(r.status_code, f"Error cargando {symbol}")
+        if len(symbol) >= 10:
+            resolved_symbol = await resolve_yahoo_symbol(symbol)
+            if resolved_symbol:
+                yahoo_result = await yahoo_chart(resolved_symbol)
+                if yahoo_result:
+                    yahoo_result["requested_symbol"] = symbol
+                    yahoo_result["resolved_symbol"] = resolved_symbol
+                    return yahoo_result
 
-            data = r.json()
-            res  = data.get("chart", {}).get("result", [])
-
-            if not res:
-                err = data.get("chart", {}).get("error", {})
-                raise HTTPException(404, f"Sin datos para '{symbol}': {err}")
-
-            meta   = res[0].get("meta", {})
-            ts     = res[0].get("timestamp", [])
-            quotes = res[0].get("indicators", {}).get("quote", [{}])[0]
-            closes = quotes.get("close", [])
-
-            # Construir histórico limpio
-            hist = []
-            for i, t in enumerate(ts):
-                p = closes[i] if i < len(closes) else None
-                if p and p > 0:
-                    hist.append({"date": t, "nav": round(float(p), 4)})
-
-            if not hist:
-                raise HTTPException(404, f"Sin datos históricos para '{symbol}'")
-
-            current = meta.get("regularMarketPrice") or hist[-1]["nav"]
-            prev    = meta.get("chartPreviousClose") or (hist[-2]["nav"] if len(hist) > 1 else current)
-            chg_pct = round(((current - prev) / prev) * 100, 2) if prev else 0
-
-            def ret(days):
-                if len(hist) >= days:
-                    old = hist[-days]["nav"]
-                    return round(((current - old) / old) * 100, 2) if old else None
-                return None
-
-            # YTD
-            y0      = int(datetime.datetime(datetime.datetime.now().year, 1, 1).timestamp())
-            ytd_pts = [h for h in hist if h["date"] >= y0]
-            ytd     = round(((current - ytd_pts[0]["nav"]) / ytd_pts[0]["nav"]) * 100, 2) if ytd_pts else None
-
-            # Nombre del fondo/ETF
-            name = meta.get("longName") or meta.get("shortName") or symbol
-
-            return {
-                "symbol":       symbol,
-                "name":         name,
-                "type":         meta.get("instrumentType") or meta.get("quoteType") or "ETF",
-                "currency":     meta.get("currency", "EUR"),
-                "exchange":     meta.get("exchangeName", ""),
-                "current_nav":  round(current, 4),
-                "current_price":round(current, 4),   # alias para compatibilidad
-                "prev_nav":     round(prev, 4),
-                "change_pct":   chg_pct,
-                "52w_high":     meta.get("fiftyTwoWeekHigh"),
-                "52w_low":      meta.get("fiftyTwoWeekLow"),
-                "return_1d":    chg_pct,
-                "return_1w":    ret(5),
-                "return_1m":    ret(21),
-                "return_3m":    ret(63),
-                "return_6m":    ret(126),
-                "return_ytd":   ytd,
-                "return_1y":    ret(252),
-                "return_3y":    ret(min(756, len(hist)-1)),
-                "history":      hist,
-                "data_points":  len(hist),
-                "source":       "yahoo_finance",
-            }
+        raise HTTPException(404, f"Sin datos para fondo/ETF '{symbol}'")
     return await cached(f"fund_detail:{symbol}", fetch, ttl=3600)
 
 # ── CRYPTO ────────────────────────────────────────────────────────────────────

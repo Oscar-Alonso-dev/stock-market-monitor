@@ -412,6 +412,7 @@ export default function Funds() {
   const [activeGrp,setActiveGrp] = useState("Todos");
   const [filter,setFilter]     = useState("");
   const [extra,setExtra]       = useState([]);
+  const [remoteCatalog,setRemoteCatalog] = useState([]);
   const loaded = useRef(new Set());
 
   const loadDetail = useCallback(async sym => {
@@ -429,16 +430,39 @@ export default function Funds() {
   // Cargar todos en grupos de 3 con delay para no saturar
   useEffect(()=>{
     const load=async()=>{
-      const syms=[...CATALOG.map(f=>f.symbol),...extra.map(f=>f.symbol)];
+      const mergedSyms = [];
+      const seen = new Set();
+      [...extra.map(f=>f.symbol), ...CATALOG.map(f=>f.symbol), ...remoteCatalog.map(f=>f.symbol)].forEach(sym => {
+        const key = (sym || "").toUpperCase();
+        if(!key || seen.has(key)) return;
+        seen.add(key);
+        mergedSyms.push(sym);
+      });
+      const syms=mergedSyms;
       for(let i=0;i<syms.length;i++){
         loadDetail(syms[i]);
         if(i%3===2) await new Promise(r=>setTimeout(r,150));
       }
     };
     load();
-  },[extra.length]);
+  },[extra, remoteCatalog, loadDetail]);
 
-  useEffect(()=>{if(selected)loadDetail(selected);},[selected]);
+  useEffect(()=>{if(selected)loadDetail(selected);},[selected, loadDetail]);
+
+  useEffect(()=>{
+    let alive = true;
+    const loadCatalog = async () => {
+      try{
+        const r = await fetch(`${API_BASE}/funds/cnmv/catalog`);
+        if(!r.ok) return;
+        const data = await r.json();
+        if(!alive || !Array.isArray(data)) return;
+        setRemoteCatalog(data);
+      }catch{}
+    };
+    loadCatalog();
+    return()=>{ alive = false; };
+  },[]);
 
   const handleSearchSelect = item => {
     if(!item.symbol) return;
@@ -448,15 +472,28 @@ export default function Funds() {
     setSelected(item.symbol);
   };
 
-  const allFunds = useMemo(()=>[
-    ...extra.map(f=>({...f,grp:"🔍 Encontrados"})),
-    ...CATALOG,
-  ],[extra]);
+  const allFunds = useMemo(()=>{
+    const merged = [];
+    const seen = new Set();
+    const pushFund = fund => {
+      const key = (fund.isin || fund.symbol || fund.name || "").toUpperCase();
+      if(!key || seen.has(key)) return;
+      seen.add(key);
+      merged.push(fund);
+    };
+
+    extra.map(f=>({...f,grp:"🔍 Encontrados"})).forEach(pushFund);
+    CATALOG.forEach(pushFund);
+    remoteCatalog.forEach(pushFund);
+    return merged;
+  },[extra, remoteCatalog]);
 
   const grps = useMemo(()=>{
-    const gs=["Todos","🔍 Encontrados",...GROUPS];
-    return gs.filter(g=>g==="Todos"||g==="🔍 Encontrados"?extra.length>0||g==="Todos":true);
-  },[extra]);
+    const dynamicGroups = [...new Set(allFunds.map(f=>f.grp).filter(Boolean))];
+    const preferred = ["Todos","🔍 Encontrados",...GROUPS];
+    const gs = [...new Set([...preferred, ...dynamicGroups])];
+    return gs.filter(g=>g==="Todos"||g==="🔍 Encontrados"?extra.length>0||g==="Todos":allFunds.some(f=>f.grp===g));
+  },[extra, allFunds]);
 
   const filtered = useMemo(()=>{
     let list=allFunds;
@@ -508,7 +545,7 @@ export default function Funds() {
 
         {/* TABS DE GRUPOS */}
         <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
-          {GROUPS.map(g=>(
+          {grps.filter(g=>g!=="Todos").map(g=>(
             <button key={g} onClick={()=>setActiveGrp(g)}
               style={{padding:"5px 12px",border:"1px solid #1e2a3a",borderRadius:5,
                 background:activeGrp===g?"#1e3050":"transparent",
@@ -562,7 +599,7 @@ export default function Funds() {
               ):(
                 <div style={{maxHeight:"70vh",overflowY:"auto"}}>
                   {/* Agrupar por grp si está en "Todos" */}
-                  {(activeGrp==="Todos"?GROUPS.filter(g=>filtered.some(f=>f.grp===g)):["_"])
+                  {(activeGrp==="Todos"?grps.filter(g=>g!=="Todos"&&g!=="🔍 Encontrados" ? filtered.some(f=>f.grp===g) : filtered.some(f=>f.grp===g)):["_"])
                     .map(grpLabel=>{
                       const grpFunds=activeGrp==="Todos"?filtered.filter(f=>f.grp===grpLabel):filtered;
                       if(grpFunds.length===0)return null;
